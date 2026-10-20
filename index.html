@@ -24,6 +24,10 @@
 <div id="out"></div>
 
 <script>
+// Public Mapbox token (pk.…), injected by .github/workflows/pages.yml from the MAPBOX_TOKEN secret.
+// Left as the placeholder (local runs, no secret) = Esri satellite is the default.
+const MAPBOX_TOKEN = '__MAPBOX_TOKEN__';
+
 // shortcut: Apple's multi-stop limit is undocumented; ~14 is a guess, raise if more work on device.
 const MAX_STOPS = 14;
 
@@ -106,11 +110,20 @@ function showMap({ trk, wpts }) {
         maxZoom: 19, maxNativeZoom: 18, attribution: 'Imagery &copy; Esri, Maxar, Earthstar Geographics'
       }),
       L.tileLayer(esri + 'Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, maxNativeZoom: 18 })
-    ]).addTo(map);
+    ]);
     const osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
     });
-    L.control.layers({ 'Спутник': sat, 'Карта': osm }).addTo(map);
+    let layers = { 'Спутник (Esri)': sat, 'Карта': osm };
+    if (MAPBOX_TOKEN.startsWith('pk.')) {
+      const mapbox = L.tileLayer('https://api.mapbox.com/styles/v1/mapbox/satellite-streets-v12/tiles/512/{z}/{x}/{y}@2x?access_token=' + MAPBOX_TOKEN, {
+        tileSize: 512, zoomOffset: -1, maxZoom: 20,
+        attribution: '&copy; <a href="https://www.mapbox.com/about/maps/">Mapbox</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> <a href="https://www.mapbox.com/map-feedback/">Improve this map</a>'
+      });
+      layers = { 'Спутник (Mapbox)': mapbox, ...layers };
+    }
+    Object.values(layers)[0].addTo(map);
+    L.control.layers(layers).addTo(map);
   }
   trackLayer?.remove();
   trackLayer = L.layerGroup().addTo(map);
