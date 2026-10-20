@@ -100,9 +100,17 @@ function showMap({ trk, wpts }) {
   document.getElementById('me').hidden = false;
   if (!map) {
     map = L.map(el);
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    const esri = 'https://server.arcgisonline.com/ArcGIS/rest/services/';
+    const sat = L.layerGroup([
+      L.tileLayer(esri + 'World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+        maxZoom: 19, maxNativeZoom: 18, attribution: 'Imagery &copy; Esri, Maxar, Earthstar Geographics'
+      }),
+      L.tileLayer(esri + 'Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, maxNativeZoom: 18 })
+    ]).addTo(map);
+    const osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
-    }).addTo(map);
+    });
+    L.control.layers({ 'Спутник': sat, 'Карта': osm }).addTo(map);
   }
   trackLayer?.remove();
   trackLayer = L.layerGroup().addTo(map);
@@ -114,9 +122,43 @@ function showMap({ trk, wpts }) {
   map.fitBounds(trk.length ? line.getBounds() : L.latLngBounds(wpts.map(w => [w.lat, w.lon])), { padding: [20, 20] });
 }
 
+let heading = null, hasCompass = false;
+
+function setHeading(deg) {
+  heading = deg;
+  const svg = me?.getElement()?.querySelector('svg');
+  if (svg) svg.style.transform = `rotate(${deg}deg)`;
+}
+
+// iOS gives webkitCompassHeading (0 = north, clockwise); Android gives absolute alpha (counter-clockwise).
+function onOrientation(e) {
+  const raw = e.webkitCompassHeading ?? (e.absolute && e.alpha != null ? 360 - e.alpha : null);
+  if (raw == null) return;
+  hasCompass = true;
+  setHeading((raw + (screen.orientation?.angle ?? window.orientation ?? 0)) % 360);
+}
+
+function startCompass() {
+  const listen = () => {
+    addEventListener('deviceorientationabsolute', onOrientation);
+    addEventListener('deviceorientation', onOrientation);
+  };
+  // iOS 13+ needs permission, and only from a tap.
+  if (typeof DeviceOrientationEvent?.requestPermission === 'function') {
+    DeviceOrientationEvent.requestPermission().then(r => r === 'granted' && listen()).catch(() => {});
+  } else listen();
+}
+
+// A function so the page still works (Apple/Google links) if Leaflet fails to load.
+const arrowIcon = () => L.divIcon({
+  className: '', iconSize: [34, 34], iconAnchor: [17, 17],
+  html: '<svg width="34" height="34" viewBox="0 0 34 34" style="transform-origin:50% 50%"><path d="M17 3 L28 29 L17 23 L6 29 Z" fill="#007aff" stroke="#fff" stroke-width="2.5" stroke-linejoin="round"/></svg>'
+});
+
 document.getElementById('me').addEventListener('click', () => {
   const status = document.getElementById('gps');
   if (!navigator.geolocation) return status.textContent = 'Геолокация недоступна';
+  if (watchId == null) startCompass();
   if (watchId != null) return me && map.setView(me.getLatLng(), Math.max(map.getZoom(), 16));
   status.textContent = 'Ищу GPS…';
   let first = true;
@@ -124,9 +166,12 @@ document.getElementById('me').addEventListener('click', () => {
     const at = [pos.coords.latitude, pos.coords.longitude];
     if (!me) {
       meAcc = L.circle(at, { radius: pos.coords.accuracy, weight: 0, fillColor: '#007aff', fillOpacity: 0.15 }).addTo(map);
-      me = L.circleMarker(at, { radius: 8, color: '#fff', weight: 3, fillColor: '#007aff', fillOpacity: 1 }).addTo(map);
+      me = L.marker(at, { icon: arrowIcon(),interactive: false, keyboard: false }).addTo(map);
+      if (heading != null) setHeading(heading);
     }
     me.setLatLng(at);
+    // Without a compass, fall back to GPS course (only present while moving).
+    if (!hasCompass && Number.isFinite(pos.coords.heading)) setHeading(pos.coords.heading);
     meAcc.setLatLng(at).setRadius(pos.coords.accuracy);
     if (first) { map.setView(at, Math.max(map.getZoom(), 16)); first = false; }
     status.textContent = `точность ±${Math.round(pos.coords.accuracy)} м`;
