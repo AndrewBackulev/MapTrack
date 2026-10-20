@@ -5,16 +5,22 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>GPX → Apple Maps</title>
 <style>
-  body { font: 16px -apple-system, system-ui, sans-serif; margin: 0 auto; max-width: 600px; padding: 16px; }
+  body { font: 16px -apple-system, system-ui, sans-serif; margin: 0 auto; max-width: 600px; padding: 16px; background: #fff; color: #111; }
   a.btn { display: block; padding: 14px; margin: 12px 0; background: #007aff; color: #fff; text-align: center; border-radius: 10px; text-decoration: none; }
   ol { padding-left: 20px; } li { margin: 4px 0; }
   .muted { color: #666; font-size: 14px; }
+  #map { height: 70vh; margin: 12px 0; border-radius: 10px; }
+  button { font: inherit; padding: 10px 14px; border-radius: 10px; border: 1px solid #ccc; background: #fff; }
 </style>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 </head>
 <body>
 <h1>GPX → Apple Maps</h1>
 <p class="muted">Скачайте GPX на странице маршрута Wikiloc («Descargar»), затем выберите файл здесь.</p>
 <input type="file" id="file" accept=".gpx,application/gpx+xml,application/xml,text/xml">
+<div id="map" hidden></div>
+<button id="me" hidden>Показать меня</button> <span id="gps" class="muted"></span>
 <div id="out"></div>
 
 <script>
@@ -78,8 +84,57 @@ const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&
 document.getElementById('file').addEventListener('change', async e => {
   const f = e.target.files[0];
   if (!f) return;
-  try { render(pickStops(parseGpx(await f.text()))); }
-  catch (err) { document.getElementById('out').textContent = err.message; }
+  try {
+    const gpx = parseGpx(await f.text());
+    render(pickStops(gpx));
+    showMap(gpx);
+  } catch (err) { document.getElementById('out').textContent = err.message; }
+});
+
+let map, trackLayer, me, meAcc, watchId;
+
+// Full track line + every waypoint; replaces the previous file's layers.
+function showMap({ trk, wpts }) {
+  const el = document.getElementById('map');
+  el.hidden = false;
+  document.getElementById('me').hidden = false;
+  if (!map) {
+    map = L.map(el);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+  }
+  trackLayer?.remove();
+  trackLayer = L.layerGroup().addTo(map);
+  const line = L.polyline(trk.map(p => [p.lat, p.lon]), { color: '#e4572e', weight: 5 }).addTo(trackLayer);
+  for (const w of wpts) {
+    const m = L.circleMarker([w.lat, w.lon], { radius: 7, color: '#fff', weight: 2, fillColor: '#222', fillOpacity: 1 }).addTo(trackLayer);
+    if (w.name) m.bindPopup(document.createTextNode(w.name));
+  }
+  map.fitBounds(trk.length ? line.getBounds() : L.latLngBounds(wpts.map(w => [w.lat, w.lon])), { padding: [20, 20] });
+}
+
+document.getElementById('me').addEventListener('click', () => {
+  const status = document.getElementById('gps');
+  if (!navigator.geolocation) return status.textContent = 'Геолокация недоступна';
+  if (watchId != null) return me && map.setView(me.getLatLng(), Math.max(map.getZoom(), 16));
+  status.textContent = 'Ищу GPS…';
+  let first = true;
+  watchId = navigator.geolocation.watchPosition(pos => {
+    const at = [pos.coords.latitude, pos.coords.longitude];
+    if (!me) {
+      meAcc = L.circle(at, { radius: pos.coords.accuracy, weight: 0, fillColor: '#007aff', fillOpacity: 0.15 }).addTo(map);
+      me = L.circleMarker(at, { radius: 8, color: '#fff', weight: 3, fillColor: '#007aff', fillOpacity: 1 }).addTo(map);
+    }
+    me.setLatLng(at);
+    meAcc.setLatLng(at).setRadius(pos.coords.accuracy);
+    if (first) { map.setView(at, Math.max(map.getZoom(), 16)); first = false; }
+    status.textContent = `точность ±${Math.round(pos.coords.accuracy)} м`;
+  }, err => {
+    status.textContent = 'GPS: ' + err.message + ' (нужен https и разрешение на геолокацию)';
+    navigator.geolocation.clearWatch(watchId);
+    watchId = null;
+  }, { enableHighAccuracy: true, maximumAge: 5000 });
 });
 
 // Self-check
