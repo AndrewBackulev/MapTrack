@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GPX → Apple Maps</title>
+<style>
+  body { font: 16px -apple-system, system-ui, sans-serif; margin: 0 auto; max-width: 600px; padding: 16px; }
+  a.btn { display: block; padding: 14px; margin: 12px 0; background: #007aff; color: #fff; text-align: center; border-radius: 10px; text-decoration: none; }
+  ol { padding-left: 20px; } li { margin: 4px 0; }
+  .muted { color: #666; font-size: 14px; }
+</style>
+</head>
+<body>
+<h1>GPX → Apple Maps</h1>
+<p class="muted">Скачайте GPX на странице маршрута Wikiloc («Descargar»), затем выберите файл здесь.</p>
+<input type="file" id="file" accept=".gpx,application/gpx+xml,application/xml,text/xml">
+<div id="out"></div>
+
+<script>
+// shortcut: Apple's multi-stop limit is undocumented; ~14 is a guess, raise if more work on device.
+const MAX_STOPS = 14;
+
+function parseGpx(text) {
+  const doc = new DOMParser().parseFromString(text, 'application/xml');
+  if (doc.querySelector('parsererror')) throw new Error('Не удалось прочитать GPX');
+  const pt = el => ({
+    lat: +el.getAttribute('lat'), lon: +el.getAttribute('lon'),
+    name: el.querySelector('name')?.textContent.trim() || ''
+  });
+  const ok = p => Number.isFinite(p.lat) && Number.isFinite(p.lon);
+  return {
+    wpts: [...doc.getElementsByTagName('wpt')].map(pt).filter(ok),
+    trk: [...doc.getElementsByTagName('trkpt')].map(pt).filter(ok)
+  };
+}
+
+function sample(arr, n) {
+  if (arr.length <= n) return arr;
+  return Array.from({ length: n }, (_, i) => arr[Math.round(i * (arr.length - 1) / (n - 1))]);
+}
+
+// Track start + waypoints (or sampled track points) + track end, capped at MAX_STOPS.
+function pickStops({ wpts, trk }) {
+  const inner = wpts.length ? wpts : sample(trk, MAX_STOPS).slice(1, -1);
+  const stops = [trk[0], ...inner, trk[trk.length - 1]].filter(Boolean);
+  if (stops.length < 2) throw new Error('В файле меньше двух точек');
+  return sample(stops, MAX_STOPS);
+}
+
+const ll = p => p.lat.toFixed(6) + ',' + p.lon.toFixed(6);
+
+function appleUrl(stops) {
+  const q = ['saddr=' + ll(stops[0]), ...stops.slice(1).map(p => 'daddr=' + ll(p)), 'dirflg=w'];
+  return 'https://maps.apple.com/?' + q.join('&');
+}
+
+// Google Maps URLs allow at most 9 waypoints between origin and destination.
+function googleUrl(stops) {
+  const s = sample(stops, 11);
+  const wp = s.slice(1, -1).map(ll).join('|');
+  return 'https://www.google.com/maps/dir/?api=1&origin=' + ll(s[0]) + '&destination=' + ll(s[s.length - 1]) +
+    (wp ? '&waypoints=' + encodeURIComponent(wp) : '') + '&travelmode=walking';
+}
+
+function render(stops) {
+  const segs = stops.slice(1).map((p, i) =>
+    `<li><a href="${appleUrl([stops[i], p])}">${esc(stops[i].name || 'точка ' + (i + 1))} → ${esc(p.name || 'точка ' + (i + 2))}</a></li>`).join('');
+  document.getElementById('out').innerHTML = `
+    <a class="btn" href="${appleUrl(stops)}">Открыть весь маршрут в Apple Maps (точек: ${stops.length})</a>
+    <a class="btn" style="background:#34a853" href="${googleUrl(stops)}">Открыть в Google Maps (точек: ${Math.min(stops.length, 11)})</a>
+    <p class="muted">Если Apple Maps показала путь только до первой точки, открывайте по отрезкам:</p>
+    <ol>${segs}</ol>`;
+}
+
+const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+document.getElementById('file').addEventListener('change', async e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  try { render(pickStops(parseGpx(await f.text()))); }
+  catch (err) { document.getElementById('out').textContent = err.message; }
+});
+
+// Self-check
+(() => {
+  const gpx = `<gpx><wpt lat="43.1" lon="-4.1"><name>Puente</name></wpt>
+    <trk><trkseg><trkpt lat="43.0" lon="-4.0"/><trkpt lat="43.05" lon="-4.05"/><trkpt lat="43.2" lon="-4.2"/></trkseg></trk></gpx>`;
+  const url = appleUrl(pickStops(parseGpx(gpx)));
+  console.assert(url === 'https://maps.apple.com/?saddr=43.000000,-4.000000&daddr=43.100000,-4.100000&daddr=43.200000,-4.200000&dirflg=w', url);
+  const g = googleUrl(pickStops(parseGpx(gpx)));
+  console.assert(g === 'https://www.google.com/maps/dir/?api=1&origin=43.000000,-4.000000&destination=43.200000,-4.200000&waypoints=43.100000%2C-4.100000&travelmode=walking', g);
+  const many =Array.from({ length: 50 }, (_, i) => ({ lat: i, lon: i, name: '' }));
+  console.assert(pickStops({ wpts: many, trk: many }).length === MAX_STOPS, 'cap');
+})();
+</script>
+</body>
+</html>
